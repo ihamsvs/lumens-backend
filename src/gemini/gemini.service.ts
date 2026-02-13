@@ -15,6 +15,7 @@ export class GeminiService {
   private supabase: SupabaseClient<any, any, any>;
   private readonly logger = new Logger(GeminiService.name);
   private unsplashKey: string;
+  private pixabayKey: string;
 
   constructor(private configService: ConfigService) {
     // Inicializar Gemini
@@ -23,6 +24,8 @@ export class GeminiService {
     // Inicializar Supabase
     const supabaseUrl = this.configService.get<string>('SUPABASE_URL') ?? '';
     const supabaseKey = this.configService.get<string>('SUPABASE_KEY') ?? '';
+    this.pixabayKey = this.configService.get<string>('PIXABAY_API_KEY') ?? '';
+    console.log('DEBUG PIXABAY KEY:', this.pixabayKey);
     // Configurar unsplashKey
     this.unsplashKey =
       this.configService.get<string>('UNPLASH_ACCESS_KEY') ?? '';
@@ -58,7 +61,7 @@ export class GeminiService {
     this.logger.log(`Miss de caché: Solicitando ${searchTem} a Gemini Live`);
     let guide = await this.callGeminiAPI(cityRaw);
     // Traer imagenes
-    this.logger.log(`Buscando fotos en Unsplash para ${searchTem}`);
+    this.logger.log(`Buscando fotos en Pixabay para ${searchTem}`);
     guide = await this.enrichWithImages(guide);
 
     // Guardar en caché
@@ -131,43 +134,44 @@ export class GeminiService {
   private async enrichWithImages(
     guide: TravelGuideResponseDto,
   ): Promise<TravelGuideResponseDto> {
-    if (!this.unsplashKey) return guide;
+    if (!this.pixabayKey) {
+      this.logger.warn('Falta PIXABAY_API_KEY, no se buscarán imágenes.');
+      return guide;
+    }
 
     // 1. FOTO DE PORTADA (General)
-    const cityQuery = `${guide.destination} travel aesthetic`;
-    guide.destination_image_url = await this.fetchUnsplashImage(cityQuery);
+    // Pixabay funciona mejor con queries simples. "Tokio travel" en lugar de "Tokio aesthetic"
+    const cityQuery = `${guide.destination} travel`;
+    guide.destination_image_url = await this.fetchPixabayImage(cityQuery);
 
-    // 2. FOTOS DE LUGARES (Estrategia "Cascada")
+    // 2. FOTOS DE LUGARES
     const spotPromises = guide.spots.map(async (spot): Promise<SpotDto> => {
-      // LIMPIEZA DEL NOMBRE (Para ayudar a la búsqueda)
-      // "Kinkaku-ji (Golden Pavilion)" -> "Kinkaku-ji"
+      // Limpieza del nombre igual que antes
       const cleanName = spot.name.split('(')[0].split('-')[0].trim();
 
-      // INTENTO 1: Nombre + Ciudad (Lo ideal)
-      // Ej: "Kinkaku-ji Kyoto"
-      const query = `${cleanName} ${spot.city}`;
-      let imageUrl = await this.fetchUnsplashImage(query);
+      // Estrategia de búsqueda
+      let imageUrl: string | undefined;
 
-      // INTENTO 2: Solo Nombre (Si falla el 1)
-      // Ej: "Kinkaku-ji" (A veces la ciudad confunde si la foto no tiene ese tag)
+      // Intento 1: Nombre + Ciudad
+      imageUrl = await this.fetchPixabayImage(`${cleanName} ${spot.city}`);
+
+      // Intento 2: Solo Nombre
       if (!imageUrl) {
-        imageUrl = await this.fetchUnsplashImage(cleanName);
+        imageUrl = await this.fetchPixabayImage(cleanName);
       }
 
-      // INTENTO 3: Categoría + Ciudad (LA RED DE SEGURIDAD)
-      // Si no encontramos el lugar específico, buscamos algo del mismo "estilo".
-      // Ej: "Temple Kyoto" o "Shopping Street Osaka"
-      // Esto asegura que casi nunca devuelva vacío.
+      // Intento 3: Categoría + Ciudad (Fallback)
       if (!imageUrl) {
-        // Usamos la categoría que nos dio Gemini o 'Landmark' por defecto
-        const categoryQuery = `${spot.category || 'Tourist attraction'} ${spot.city}`;
-        console.log(
-          `   ⚠️ Usando fallback genérico para ${cleanName}: "${categoryQuery}"`,
-        );
-        imageUrl = await this.fetchUnsplashImage(categoryQuery);
+        const categoryQuery = `${spot.category || 'tourist attraction'} ${spot.city}`;
+        imageUrl = await this.fetchPixabayImage(categoryQuery);
       }
 
-      // Si falló todo (rarísimo), entonces sí queda undefined (icono cámara)
+      // Intento 4: Fallback genérico si todo falla (Imagen bonita de viaje)
+      if (!imageUrl) {
+        imageUrl =
+          'https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=2021&auto=format&fit=crop';
+      }
+
       spot.image_url = imageUrl;
       return spot;
     });
@@ -177,15 +181,26 @@ export class GeminiService {
   }
 
   // Mantenemos el fetch simple que arreglamos antes (sin landscape para tener más opciones)
-  private async fetchUnsplashImage(query: string): Promise<string | undefined> {
+  private async fetchPixabayImage(query: string): Promise<string | undefined> {
     try {
-      const url = `https://api.unsplash.com/search/photos?page=1&per_page=1&query=${encodeURIComponent(query)}`;
-      const res = await axios.get(url, {
-        headers: { Authorization: `Client-ID ${this.unsplashKey}` },
-        timeout: 4000,
-      });
-      return res.data.results[0]?.urls?.regular || undefined;
+      // Pixabay requiere encoding específico y '+' para espacios
+      const encodedQuery = encodeURIComponent(query);
+
+      const url = `https://pixabay.com/api/?key=${this.pixabayKey}&q=${encodedQuery}&image_type=photo&orientation=horizontal&per_page=3&safesearch=true`;
+
+      const res = await axios.get(url, { timeout: 5000 });
+
+      // Verificamos si hay "hits" (resultados)
+      if (res.data.hits && res.data.hits.length > 0) {
+        // 'webformatURL' es un tamaño medio bueno para web (aprox 640px ancho)
+        // 'largeImageURL' es Full HD. Usamos webformatURL para carga rápida, o large si prefieres calidad.
+        return res.data.hits[0].webformatURL;
+      }
+      return undefined;
     } catch (error) {
+      this.logger.error(
+        `Error buscando en Pixabay para "${query}": ${error.message}`,
+      );
       return undefined;
     }
   }
