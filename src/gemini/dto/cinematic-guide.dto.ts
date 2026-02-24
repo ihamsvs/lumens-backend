@@ -8,17 +8,17 @@ import {
   MaxLength,
   Matches,
   IsOptional,
+  IsNotEmpty,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class SearchCityDTO {
-  @IsString({ message: 'La ciudad debe ser un texto' })
-  @MinLength(3, {
-    message: 'La ciudad debe tener al menos 3 caracteres (mínimo 3 letras).',
-  })
-  @MaxLength(50, { message: 'El nombre de la ciudad es muy largo.' })
-  @Matches(/^[a-zA-Z\s\u00C0-\u00FF]+$/, {
-    message: 'El nombre de la ciudad solo puede contener letras y espacios.',
+  @IsString({ message: 'La búsqueda debe ser un texto válido.' })
+  @IsNotEmpty({ message: 'El parámetro "city" no puede estar vacío.' })
+  // Aumentamos el límite a 200 o 300 caracteres para permitir descripciones largas,
+  // y quitamos cualquier validador @Matches o @IsAlpha que prohibía comas o números.
+  @MaxLength(300, {
+    message: 'La descripción es demasiado larga (máximo 300 caracteres).',
   })
   city: string;
 }
