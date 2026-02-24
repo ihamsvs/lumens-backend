@@ -6,6 +6,7 @@ import { ConfigModule } from '@nestjs/config';
 import { GeminiModule } from './gemini/gemini.module';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { GuidesModule } from './guides/guides.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { APP_GUARD } from '@nestjs/core';
       },
     ]),
     GeminiModule,
+    GuidesModule,
   ],
   controllers: [AppController],
   providers: [
