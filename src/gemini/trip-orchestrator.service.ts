@@ -8,7 +8,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import { GeminiService } from './gemini.service';
 import { VibeRouterService } from './vibe-router.service';
-import { TravelGuideResponseDto, SpotDto } from './dto/cinematic-guide.dto';
+import { TravelGuideResponseDto } from './dto/cinematic-guide.dto';
 @Injectable()
 export class TripOrchestratorService {
   private supabase: SupabaseClient<any, any, any>;
@@ -79,36 +79,39 @@ export class TripOrchestratorService {
     city: string,
   ): Promise<TravelGuideResponseDto> {
     const prompt = `
-          ROLE: Guía de Viajes Experto & Location Scout de Cine.
-          TASK: Crea una guía para "${city}" enfocada en turistas que aman el cine y la fotografía.
+    [REGLA ESTRICTA ANTI-CLICHÉ - MODO LOCATION SCOUT]
+    Está terminantemente prohibido sugerir atracciones turísticas obvias o genéricas (ej: Torre Eiffel, Times Square, Coliseo Romano). Tu objetivo es revelar el "B-Side" de la ciudad. Sugiere callejones ocultos, joyas arquitectónicas subestimadas, miradores poco conocidos y ángulos inusuales que los turistas normales ignoran, pero que un director de fotografía amaría.
 
-          ESTRUCTURA JSON OBLIGATORIA:
-          {
-            "destination": "${city}",
-            "description_intro": "Breve resumen inspirador.",
-            "best_month_to_visit": "Mejor época y por qué.",
-            "spots": [
-              {
-                "name": "Nombre Lugar",
-                "country": "País",
-                "city": "Ciudad",
-                "category": "Historia/Naturaleza/Urbano",
-                "coordinates": { "latitude": 0.0, "longitude": 0.0 },
-                "description": "Descripción turística.",
-                "best_time_to_visit": "Mejor hora (ej: Atardecer).",
-                "visitor_tip": "Tip práctico.",
-                "movie_connection": "Película rodada aquí (ej: Inception).",
-                "camera_settings": {
-                  "iso": "ISO 100",
-                  "shutter_speed": "1/500",
-                  "aperture": "f/8",
-                  "focal_length": "24mm",
-                  "lens_recommendation": "Gran Angular"
-                }
-              }
-            ]
+    ROLE: Guía de Viajes Experto & Location Scout de Cine.
+    TASK: Crea una guía para "${city}" enfocada en creadores de contenido que aman el cine y la fotografía.
+    INSTRUCCIÓN: Genera EXACTAMENTE 4 locaciones diferentes.
+    FORMATO: Devuelve ÚNICAMENTE un objeto JSON válido, sin formato Markdown, sin explicaciones extra.
+
+    ESTRUCTURA JSON OBLIGATORIA:
+    {
+      "destination": "${city}",
+      "description_intro": "Breve resumen inspirador.",
+      "best_month_to_visit": "Mejor época y por qué.",
+      "spots": [
+        {
+          "name": "Nombre Lugar",
+          "country": "País",
+          "city": "Ciudad",
+          "category": "Historia/Naturaleza/Urbano",
+          "coordinates": { "latitude": 0.0, "longitude": 0.0 },
+          "description": "Descripción turística y por qué es visualmente impactante.",
+          "best_time_to_visit": "Mejor hora (ej: Atardecer).",
+          "visitor_tip": "Tip práctico de acceso o seguridad.",
+          "movie_connection": "Película rodada aquí o vibra cinematográfica similar.",
+          "image_search_term": "Término en INGLÉS de 2 a 3 palabras para buscar una foto de este lugar (Ej: 'Brussels Art Nouveau', 'Tokyo neon alley').",
+          "camera_settings": {
+            "pro": "Ajustes para cámaras DSLR/Mirrorless (Ej: ISO 100, f/1.8, 1/60s, lente 50mm).",
+            "mobile": "Ajustes para smartphone/TikTok (Ej: Lente 0.5x ultra gran angular, bajar la exposición -1, bloquear enfoque, grabar en 4K 60fps)."
           }
-        `;
+        }
+      ]
+    }
+    `;
     try {
       // Llamamos a nuestro operador con el modelo y pidiendo JSON
       const rawText = await this.geminiService.generateContent(
@@ -150,35 +153,81 @@ export class TripOrchestratorService {
       return guide;
     }
 
-    const cityQuery = `${guide.destination} travel`;
-    guide.destination_image_url = await this.fetchPixabayImage(cityQuery);
-    const spotPromises = guide.spots.map(async (spot): Promise<SpotDto> => {
-      const cleanName = spot.name.split('')[0].split('-')[0].trim();
+    // 1. Creamos la "memoria" de imágenes usadas en esta petición
+    const usedImages = new Set<string>();
+
+    // 2. Buscamos la imagen principal
+    const cityQuery = `${guide.destination} travel city`;
+    guide.destination_image_url = await this.fetchPixabayImage(
+      cityQuery,
+      usedImages,
+    );
+    if (guide.destination_image_url)
+      usedImages.add(guide.destination_image_url);
+
+    // 3. ATENCIÓN: Cambiamos Promise.all por un bucle for...of
+    // Esto es vital para que la "memoria" se actualice una por una y no haya choques
+    for (const spot of guide.spots) {
       let imageUrl: string | undefined;
-      imageUrl = await this.fetchPixabayImage(`${cleanName} ${spot.city}`);
-      if (!imageUrl) imageUrl = await this.fetchPixabayImage(cleanName);
-      if (!imageUrl)
+
+      if (spot.image_search_term) {
         imageUrl = await this.fetchPixabayImage(
-          `${spot.category || 'tourist'} ${spot.city}`,
+          spot.image_search_term,
+          usedImages,
         );
-      if (!imageUrl)
+      }
+
+      if (!imageUrl) {
+        const cleanName = spot.name.split(':')[0].split('-')[0].trim();
+        imageUrl = await this.fetchPixabayImage(
+          `${cleanName} ${spot.city}`,
+          usedImages,
+        );
+      }
+
+      if (!imageUrl) {
+        imageUrl = await this.fetchPixabayImage(
+          `${spot.category || 'architecture'} ${spot.city}`,
+          usedImages,
+        );
+      }
+
+      if (!imageUrl) {
         imageUrl =
           'https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=2021&auto=format&fit=crop';
+      }
+
       spot.image_url = imageUrl;
-      return spot;
-    });
-    guide.spots = await Promise.all(spotPromises);
+      // Guardamos la imagen en la memoria para no repetirla en el siguiente spot
+      if (imageUrl) usedImages.add(imageUrl);
+    }
+
     return guide;
   }
 
-  private async fetchPixabayImage(query: string): Promise<string | undefined> {
+  private async fetchPixabayImage(
+    query: string,
+    usedImages: Set<string>,
+  ): Promise<string | undefined> {
     try {
       const encodedQuery = encodeURIComponent(query);
-      const url = `https://pixabay.com/api/?key=${this.pixabayKey}&q=${encodedQuery}&image_type=photo&orientation=horizontal&per_page=3&safesearch=true`;
+      // Pedimos 10 resultados en vez de 3 para tener más opciones de dónde elegir
+      const url = `https://pixabay.com/api/?key=${this.pixabayKey}&q=${encodedQuery}&image_type=photo&orientation=horizontal&per_page=10&safesearch=true`;
+
       const res = await axios.get(url, { timeout: 5000 });
+
       if (res.data.hits && res.data.hits.length > 0) {
-        return res.data.hits[0].webformatURL;
+        // Magia: Buscamos la primera imagen de la lista que NO hayamos usado todavía
+        const uniqueHit = res.data.hits.find(
+          (hit) => !usedImages.has(hit.webformatURL),
+        );
+
+        // Si encontramos una nueva, la devolvemos.  repetimos la primera.
+        return uniqueHit
+          ? uniqueHit.webformatURL
+          : res.data.hits[0].webformatURL;
       }
+
       return undefined;
     } catch (error) {
       this.logger.warn(

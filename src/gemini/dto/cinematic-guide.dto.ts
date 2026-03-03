@@ -72,6 +72,10 @@ export class SpotDto {
   @IsString()
   movie_connection: string; // Ej: "Aquí se rodó la escena final de X"
 
+  @IsOptional()
+  @IsString()
+  image_search_term?: string;
+
   @ValidateNested()
   @Type(() => CameraSettingsDto)
   camera_settings: CameraSettingsDto;
